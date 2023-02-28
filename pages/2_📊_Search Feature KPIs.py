@@ -52,6 +52,12 @@ EXP_TRAINING["CALENDAR_DATE"] = pd.to_datetime(EXP_TRAINING["CALENDAR_DATE"])
 EXP_TRAINING["MONTH"] = pd.to_datetime(EXP_TRAINING["CALENDAR_DATE"]).dt.strftime("%Y-%m")
 MONTHLY_EXP = EXP_TRAINING.groupby("MONTH").last().reset_index()
 
+# Growth Metrics
+Exp_Year0 = int(mean(MONTHLY_EXP["MAUS"].iloc[-6:]))
+Exp_Year1 = int(mean(MONTHLY_EXP["MAUS"].iloc[-12:-6]))
+Exp_Growth = ((Exp_Year0 - Exp_Year1) / Exp_Year1) * 100
+Exp_Growth_Pct = round(Exp_Growth, 2)
+
 ######################################################################
 
 ##SEARCH MERCHANDISER
@@ -63,6 +69,12 @@ SEARCH_MERCH["CALENDAR_DATE"] = pd.to_datetime(SEARCH_MERCH["CALENDAR_DATE"])
 # Calculate monthly ACV using ACV of last day of each month
 SEARCH_MERCH["MONTH"] = pd.to_datetime(SEARCH_MERCH["CALENDAR_DATE"]).dt.strftime("%Y-%m")
 MONTHLY_SM = SEARCH_MERCH.groupby("MONTH").last().reset_index()
+
+# Growth Metrics
+SM_Year0 = int(mean(MONTHLY_SM["MAUS"].iloc[-2:]))
+SM_Year1 = int(mean(MONTHLY_SM["MAUS"].iloc[-14:-2]))
+SM_Growth = ((SM_Year0 - SM_Year1) / SM_Year1) * 100
+SM_Growth_Pct = round(SM_Growth, 2)
 
 ######################################################################
 
@@ -86,11 +98,15 @@ with tabs[0]:
     st.info(
         f"""
         ## Summary
-        #### As of February 2023, Experience Training has seen stagnant growth.
-        It is still being used, with avg. monthly active user counts this year of {int(mean(MONTHLY_EXP["MAUS"].iloc[-6:]))} compared to a monthly active user count last year of {int(mean(MONTHLY_EXP["MAUS"].iloc[-12:-6]))}
+        #### As of February 2023, Experience Training has seen mild growth ({Exp_Growth_Pct}%).
+        It is still being used, with avg. monthly active user counts this year of {Exp_Year0} compared to a monthly active user count last year of {Exp_Year1}
         ##### We want to increase growth, as we still believe experience training plays a valuable role in the search ecosystem.
         To stir this growth we have an initiative to revamp our NLP Filter and Feature Snippet Training modules, currently being worked on by Backfire.
 
+        #### Since updating the 'gateway' to the search merchandiser in December of 2022, we have seen continual growth in usage ({SM_Growth_Pct}%).
+        Average monthly active user counts this year so far have been {SM_Year0} compared to a monthly active user count last year of {SM_Year1}
+        This UI change is still recent, so we will monitor to make sure the upward trend continues.
+        ##### With future search merchandiser improvements, we also hope to see larger upticks in MAUs as we expand its scope and functionality.
         """
     )
 
@@ -114,6 +130,19 @@ with tabs[0]:
 
 
 with tabs[1]:
+    st.info(
+        f"""
+        ## Summary
+        #### As of February 2023, use of our searchable fields has seen steady growth.
+        Most surprisingly, NLP Filters are our most used searchable fields, even more widely used than Text Search.
+        One potential reason for this might be that one of Yext's differentiators is our use of NLP and Semantic Search algorithms,
+        so clients and admins alike want to make sure that their experiences are making use of the newest and best technology.
+        ##### We want to make sure that NLP Filters (or other algorithms) are being used in the proper use cases.
+        To do this, we have a future project to revamp our search configuration screens in the platform, which will hopefully help guide
+        admins to choosing the correct search algorithm per searchable field.
+        """
+    )
+
     st.write("## Search Configuration Features")
 
     st.write("## Searchable Fields Usage")
