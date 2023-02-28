@@ -18,21 +18,22 @@ st.write("This dashboard shows the state of the Search business at Yext.")
 st.write("""---""")
 
 
-# # Initialize connection.
-# # Uses st.cache_resource to only run once.
-# @st.cache_resource
-# def init_connection():
-#     return snowflake.connector.connect(**st.secrets["snowflake"], client_session_keep_alive=True)
+# Initialize connection.
+# Uses st.cache_resource to only run once.
+@st.cache_resource
+def init_connection():
+    return snowflake.connector.connect(**st.secrets["snowflake"], client_session_keep_alive=True)
 
-# CONN = init_connection()
 
-# # Perform query.
-# # Uses st.cache_data to only rerun when the query changes or after 10 min.
-# @st.cache_data(ttl=600)
-# def run_query(query):
-#     with CONN.cursor() as cur:
-#         cur.execute(query)
-#         return cur.fetchall()
+CONN = init_connection()
+
+# Perform query.
+# Uses st.cache_data to only rerun when the query changes or after 10 min.
+@st.cache_data(ttl=600)
+def run_query(query):
+    with CONN.cursor() as cur:
+        cur.execute(query)
+        return cur.fetchall()
 
 
 def read_data(file):
@@ -88,69 +89,219 @@ def format_date(date):
     return pd.to_datetime(date).strftime("%B, %Y")
 
 
+def format_usd(value, round="M"):
+    if round == "M":
+        return "${:,.1f}M".format(value / 1000000)
+    elif round == "K":
+        return "${:,.1f}K".format(value / 1000)
+    else:
+        return "${:,.0f}".format(value)
+
+
+def format_percentage(value):
+    return "{:.1%}".format(value)
+
+
+# Read quotelines file
 QUOTELINES = read_data("data/search_quotelines.csv")
+
+# Filter out deals with no TCV (unrelated upgrades, cancellations, etc.)
 QUOTELINES = QUOTELINES[QUOTELINES["NET_TOTAL_USD"] > 0]
+
+# Convert dates to datetime
+QUOTELINES["CLOSE_DATE"] = pd.to_datetime(QUOTELINES["CLOSE_DATE"])
+QUOTELINES["START_DATE"] = pd.to_datetime(QUOTELINES["START_DATE"])
+QUOTELINES["END_DATE"] = pd.to_datetime(QUOTELINES["END_DATE"])
 QUOTELINES["FIRST_CLOSE_DATE"] = QUOTELINES.groupby("BUSINESS_ID")["CLOSE_DATE"].transform("min")
+QUOTELINES["COUNTRY"] = QUOTELINES["CURRENCY"].map(
+    {"USD": "NA", "CAD": "NA", "EUR": "EMEA", "GBP": "EMEA", "JPY": "Japan"}
+)
+
+# Calculate additional contract details
 QUOTELINES["CONTRACT_TYPE"] = QUOTELINES.apply(
     lambda row: "New Logo" if row["CLOSE_DATE"] == row["FIRST_CLOSE_DATE"] else "Renewal", axis=1
 )
-QUOTELINES["FIRST_CLOSE_YEAR"] = pd.to_datetime(QUOTELINES["FIRST_CLOSE_DATE"]).dt.strftime("%Y")
-QUOTELINES["COUNTRY"] = QUOTELINES["CURRENCY"].map(
-    {"USD": "NA", "CAD": "NA", "EUR": "EMEA", "GBP": "EMEA", "JPY": "Japan", "AUD": "Australia"}
+
+# Get businesses dataframe
+BUSINESSES = (
+    QUOTELINES.groupby(["BUSINESS_ID", "NAME", "INDUSTRY", "COUNTRY"])
+    .agg(
+        {
+            "NET_TOTAL_USD": "sum",
+            "CLOSE_DATE": "min",
+            "START_DATE": "min",
+            "END_DATE": "max",
+        }
+    )
+    .reset_index()
 )
 
+BUSINESSES["ACV_USD"] = BUSINESSES["NET_TOTAL_USD"] / (
+    (BUSINESSES["END_DATE"] - BUSINESSES["START_DATE"]).dt.days / 365
+)
+BUSINESSES["IS_ACTIVE"] = BUSINESSES["END_DATE"].apply(lambda x: x >= pd.to_datetime("today"))
+BUSINESSES["CLOSE_YEAR"] = pd.to_datetime(BUSINESSES["CLOSE_DATE"]).dt.strftime("%Y")
+BUSINESSES = BUSINESSES[
+    (
+        ~BUSINESSES["INDUSTRY"].isnull()
+        & ~BUSINESSES["CLOSE_DATE"].isnull()
+        & ~BUSINESSES["COUNTRY"].isnull()
+    )
+]
+ACTIVE_BUSINESSES = BUSINESSES[BUSINESSES["IS_ACTIVE"]]
+
+# Read daily ACV file
 DAILY_ACV = read_data("data/search_acv_by_date.csv")
+
+# Convert dates to datetime
+DAILY_ACV["CALENDAR_DATE"] = pd.to_datetime(DAILY_ACV["CALENDAR_DATE"])
+
+# Calculate monthly ACV using ACV of last day of each month
 DAILY_ACV["MONTH"] = pd.to_datetime(DAILY_ACV["CALENDAR_DATE"]).dt.strftime("%Y-%m")
 MONTHLY_ACV = DAILY_ACV.groupby("MONTH").last().reset_index()
 MONTHLY_ACV["MoM Growth"] = MONTHLY_ACV["ACTIVE_ACV"].pct_change()
 MONTHLY_ACV["YoY Growth"] = MONTHLY_ACV["ACTIVE_ACV"].pct_change(periods=12)
-MONTHLY_ACV["CMGR"] = (MONTHLY_ACV["ACTIVE_ACV"] / MONTHLY_ACV["ACTIVE_ACV"].iloc[0]) ** (
-    1 / MONTHLY_ACV.index
+
+# Calculate CAGR and CMGR for last 12 months
+LAST_12_ACV = MONTHLY_ACV.tail(13).reset_index()
+LAST_12_ACV.drop(["index", "CALENDAR_DATE"], axis=1, inplace=True)
+LAST_12_ACV["CMGR"] = (LAST_12_ACV["ACTIVE_ACV"] / LAST_12_ACV["ACTIVE_ACV"].iloc[0]) ** (
+    1 / LAST_12_ACV.index
 ) - 1
-MONTHLY_ACV["CAGR"] = (MONTHLY_ACV["ACTIVE_ACV"] / MONTHLY_ACV["ACTIVE_ACV"].iloc[0]) ** (
-    1 / (MONTHLY_ACV.index / 12)
+LAST_12_ACV["CAGR"] = (LAST_12_ACV["ACTIVE_ACV"] / LAST_12_ACV["ACTIVE_ACV"].iloc[0]) ** (
+    1 / (LAST_12_ACV.index / 12)
 ) - 1
+LAST_12_ACV = LAST_12_ACV.tail(12)
 
 tabs = st.tabs(["Overall", "Customer Summary", "Deals", "Specific Business"])
 with tabs[0]:
 
-    st.write("## Search ACV per Month")
-    st.bar_chart(MONTHLY_ACV, x="MONTH", y="ACTIVE_ACV", height=500)
+    st.info(
+        f"""
+        ## Summary
+        #### As of February 2023, Yext Search has {format_usd(MONTHLY_ACV['ACTIVE_ACV'].iloc[-1])} in annual contract value (ACV).
+        This compares to **\{format_usd(MONTHLY_ACV['ACTIVE_ACV'].iloc[-2])} in January 2023**, or 
+        {format_percentage(MONTHLY_ACV['MoM Growth'].iloc[-1])} growth month-over-month (MoM); 
+        or, **\{format_usd(MONTHLY_ACV['ACTIVE_ACV'].iloc[-12])} in February 2022**, and 
+        {format_percentage(MONTHLY_ACV['YoY Growth'].iloc[-1])} growth year-over-year (YoY).
+        
+        [Coveo](https://ir.coveo.com/en/news-events/press-releases/detail/241/coveo-reports-fourth-quarter-and-fiscal-year-2022-financial) 
+        reported **\$77.9M** in SaaS subscription revenue in FY22 with a growth rate of 41% YoY, and 
+        [Algolia](https://getlatka.com/companies/algolia) reportedly has an annual revenue of **\$75M**.
 
-    st.write("## MoM Growth")
-    st.bar_chart(MONTHLY_ACV, x="MONTH", y="MoM Growth", height=500)
+        #### Yext Search has captured \{format_usd(QUOTELINES['NET_TOTAL_USD'].sum())} in total contract value (TCV) since inception.
+        In the same ballpark timeframe, Reviews (Response, Monitoring, and Generation) captured 
+        approximately **\$50-60M**, Pages captured about **\$80-100M**, and Listings captured **\$300M+**. 
+        _Note this only includes contracts in Zuora, which was first implemented in 2020 and probably 
+        disproportionally excludes other products._
 
-    st.write("## YoY Growth")
-    st.bar_chart(MONTHLY_ACV, x="MONTH", y="YoY Growth", height=500)
+        #### Over the past 12 months, Yext Search has grown at a compound monthly growth rate (CMGR) of {format_percentage(LAST_12_ACV['CMGR'].iloc[-1])}, and a compound annual growth rate (CAGR) of {format_percentage(LAST_12_ACV['CAGR'].iloc[-1])}.
+        This compares favorably to industry averages [published by SaaS Capital](https://www.saas-capital.com/research/2020-private-saas-company-growth-rate-benchmarks/), 
+        which states that **startups between \$10M and \$20M in revenue average a growth rate of 43%**.
+
+        #### Last month, Yext Search closed \{format_usd(QUOTELINES[QUOTELINES['CLOSE_DATE'].dt.strftime('%Y-%m') == '2023-01']['NET_TOTAL_USD'].sum())} in TCV, compared to \{format_usd(QUOTELINES[QUOTELINES['CLOSE_DATE'].dt.strftime('%Y-%m') == '2022-12']['NET_TOTAL_USD'].sum())} in the previous month, or \{format_usd(QUOTELINES[QUOTELINES['CLOSE_DATE'].dt.strftime('%Y-%m') == '2022-01']['NET_TOTAL_USD'].sum())} a year ago.
+        Incremental TCV (new contracts closed, including new logos and renewals) is largely flat month-over-month.
+        """
+    )
+    st.write("""---""")
+
+    st.write("## Last 12 Months")
+
+    st.write("### Annual Contract Value (ACV)")
+    st.write("The ACV of active Search contracts each month over the past 12 months.")
+    st.bar_chart(LAST_12_ACV, x="MONTH", y="ACTIVE_ACV", height=500)
+
+    st.write("### Compound Monthly Growth Rate (CMGR)")
+    st.write("The average monthly growth rate of Yext Search over the past 12 months.")
+    st.line_chart(LAST_12_ACV, x="MONTH", y="CMGR", height=500)
+
+    st.write("### Compound Annual Growth Rate (CAGR)")
+    st.write("The average annual growth rate of Yext Search over the past 12 months.")
+    st.line_chart(LAST_12_ACV, x="MONTH", y="CAGR", height=500)
+
+    with st.expander("Show Raw Data"):
+        st.dataframe(LAST_12_ACV)
 
 
 with tabs[1]:
-    # Display a tree map of customers by Industry
-    st.write("## Customers by Industry")
-    st.write("Search customers by industry. Size represents total contract value (TCV).")
 
-    industry_quotelines = QUOTELINES[~QUOTELINES["INDUSTRY"].isnull()]
+    st.info(
+        f"""
+        ## Summary
+        #### Finance and Healthcare represent the largest industries for Yext Search, with \{format_usd(ACTIVE_BUSINESSES[ACTIVE_BUSINESSES['INDUSTRY'] == 'Financial Services']['NET_TOTAL_USD'].sum())} ({format_percentage(ACTIVE_BUSINESSES[ACTIVE_BUSINESSES['INDUSTRY'] == 'Financial Services']['NET_TOTAL_USD'].sum() / ACTIVE_BUSINESSES['NET_TOTAL_USD'].sum())} of TCV) and \{format_usd(ACTIVE_BUSINESSES[ACTIVE_BUSINESSES['INDUSTRY'] == 'Healthcare']['NET_TOTAL_USD'].sum())} ({format_percentage(ACTIVE_BUSINESSES[ACTIVE_BUSINESSES['INDUSTRY'] == 'Healthcare']['NET_TOTAL_USD'].sum() / ACTIVE_BUSINESSES['NET_TOTAL_USD'].sum())} of TCV), respectively.
+        However, Yext Search has sizeable customers across all industries.
+
+        #### Overall, customer retention is {format_percentage(BUSINESSES["IS_ACTIVE"].mean())} (i.e. {BUSINESSES["IS_ACTIVE"].sum()} of {BUSINESSES["BUSINESS_ID"].count()} customers are active).
+        This is below [industry averages](https://userpilot.com/blog/good-retention-rates-in-saas/#:~:text=The%20monthly%20average%20churn%20rate,range%20of%2092%2D97%20%25.) of 92-97%. Particular weak spots include in Retail and EMEA.
+
+        #### Most TCV today was acquired in 2021, not 2022. \{format_usd(BUSINESSES[BUSINESSES["CLOSE_YEAR"] == '2021']['NET_TOTAL_USD'].sum())} TCV was acquired in 2021, compared to \{format_usd(BUSINESSES[BUSINESSES["CLOSE_YEAR"] == '2022']['NET_TOTAL_USD'].sum())} in 2022.
+        This slowdown does align with strategic decisions to re-focus on core products like Listings, instead of viewing Search as the primary growth engine of the business.
+    """
+    )
+
+    # Customer metrics by Industry
+    st.write("## Industry")
+    st.write("### All Industries by TCV")
+
+    retention_i = (
+        BUSINESSES.groupby(["INDUSTRY"])
+        .agg({"BUSINESS_ID": "count", "NET_TOTAL_USD": "sum", "IS_ACTIVE": "mean"})
+        .reset_index()
+    )
+
     fig = px.treemap(
-        industry_quotelines,
+        BUSINESSES,
         path=[px.Constant("All"), "INDUSTRY", "NAME"],
         values="NET_TOTAL_USD",
         color="INDUSTRY",
         color_discrete_sequence=px.colors.qualitative.Pastel,
         height=1000,
     )
-
     st.plotly_chart(fig, use_container_width=True)
 
-    # Display a tree map of customers by sign-up year
-    st.write("## Customers by Sign-up Year")
-    st.write("Search customers by sign-up year. Size represents total contract value (TCV).")
+    st.write("### Industries with \$2M+ in TCV")
+    industries = BUSINESSES.groupby(["INDUSTRY"]).agg({"NET_TOTAL_USD": "sum"}).reset_index()
+    industries.sort_values("NET_TOTAL_USD", ascending=False, inplace=True)
+    bar = px.bar(industries.head(6), x="INDUSTRY", y="NET_TOTAL_USD", height=500)
+    st.plotly_chart(bar, use_container_width=True)
 
-    year_quotelines = QUOTELINES[~QUOTELINES["FIRST_CLOSE_YEAR"].isnull()]
+    st.write("### Retention by Industry")
+    retention_i.sort_values("NET_TOTAL_USD", ascending=False, inplace=True)
+    retention_i.rename({"IS_ACTIVE": "CUSTOMER_RETENTION"}, axis=1, inplace=True)
+    retention_bar = px.bar(retention_i.head(6), x="INDUSTRY", y="CUSTOMER_RETENTION", height=500)
+    st.plotly_chart(retention_bar, use_container_width=True)
+
+    st.write("### Change in TCV by Industry (% YoY, 2021 to 2022)")
+    change = (
+        BUSINESSES.groupby(["INDUSTRY", "CLOSE_YEAR"]).agg({"NET_TOTAL_USD": "sum"}).reset_index()
+    )
+    change["Cumulative TCV"] = change.groupby("INDUSTRY")["NET_TOTAL_USD"].cumsum()
+    change["YoY Change"] = change.groupby("INDUSTRY")["Cumulative TCV"].pct_change()
+    change = change[change["CLOSE_YEAR"] == "2022"]
+    # Sort into Healthcare, Financial Services, Manufacturing, Information, Retail, Food & Hospitality
+    change["INDUSTRY"] = pd.Categorical(
+        change["INDUSTRY"],
+        [
+            "Healthcare",
+            "Financial Services",
+            "Manufacturing",
+            "Information",
+            "Retail",
+            "Food & Hospitality",
+        ],
+    )
+    change.sort_values("INDUSTRY", inplace=True)
+    bar = px.bar(change, x="INDUSTRY", y="YoY Change", height=500)
+    st.plotly_chart(bar, use_container_width=True)
+
+    # Customer metrics by Sign-up Year
+    st.write("## Sign-up Year")
+    st.write("### All Customers by Sign-up Year")
     fig = px.treemap(
-        year_quotelines,
-        path=[px.Constant("All"), "FIRST_CLOSE_YEAR", "NAME"],
+        BUSINESSES,
+        path=[px.Constant("All"), "CLOSE_YEAR", "NAME"],
         values="NET_TOTAL_USD",
-        color="FIRST_CLOSE_YEAR",
+        color="CLOSE_YEAR",
         color_discrete_sequence=px.colors.qualitative.Pastel,
         height=1000,
     )
@@ -158,14 +309,24 @@ with tabs[1]:
         coloraxis_showscale=False,
     )
     st.plotly_chart(fig, use_container_width=True)
+    st.bar_chart(BUSINESSES, x="CLOSE_YEAR", y="NET_TOTAL_USD", height=500)
 
-    # Display a tree map of customers by country
-    st.write("## Customers by Country")
-    st.write("Search customers by country. Size represents total contract value (TCV).")
+    st.write("### Retention by Sign-up Year")
+    retention_y = (
+        BUSINESSES.groupby(["CLOSE_YEAR"])
+        .agg({"BUSINESS_ID": "count", "NET_TOTAL_USD": "sum", "IS_ACTIVE": "mean"})
+        .reset_index()
+    )
+    retention_y.sort_values("NET_TOTAL_USD", ascending=False, inplace=True)
+    retention_y.rename({"IS_ACTIVE": "CUSTOMER_RETENTION"}, axis=1, inplace=True)
+    retention_bar = px.bar(retention_y, x="CLOSE_YEAR", y="CUSTOMER_RETENTION", height=500)
+    st.plotly_chart(retention_bar, use_container_width=True)
 
-    country_quotelines = QUOTELINES[~QUOTELINES["COUNTRY"].isnull()]
+    # Customer metrics by Region
+    st.write("## Region")
+    st.write("### All Regions by TCV")
     fig = px.treemap(
-        country_quotelines,
+        BUSINESSES,
         path=[px.Constant("All"), "COUNTRY", "NAME"],
         values="NET_TOTAL_USD",
         color="COUNTRY",
@@ -176,6 +337,29 @@ with tabs[1]:
         coloraxis_showscale=False,
     )
     st.plotly_chart(fig, use_container_width=True)
+    st.bar_chart(BUSINESSES, x="COUNTRY", y="NET_TOTAL_USD", height=500)
+
+    st.write("### Retention by Region")
+    retention_r = (
+        BUSINESSES.groupby(["COUNTRY"])
+        .agg({"BUSINESS_ID": "count", "NET_TOTAL_USD": "sum", "IS_ACTIVE": "mean"})
+        .reset_index()
+    )
+    retention_r.sort_values("NET_TOTAL_USD", ascending=False, inplace=True)
+    retention_r.rename({"IS_ACTIVE": "CUSTOMER_RETENTION"}, axis=1, inplace=True)
+    retention_bar = px.bar(retention_r, x="COUNTRY", y="CUSTOMER_RETENTION", height=500)
+    st.plotly_chart(retention_bar, use_container_width=True)
+
+    st.write("### Change in TCV (YoY %, 2021 to 2022)")
+    change = (
+        BUSINESSES.groupby(["COUNTRY", "CLOSE_YEAR"]).agg({"NET_TOTAL_USD": "sum"}).reset_index()
+    )
+    change["Cumulative TCV"] = change.groupby("COUNTRY")["NET_TOTAL_USD"].cumsum()
+    change["YoY Change"] = change.groupby("COUNTRY")["Cumulative TCV"].pct_change()
+    change = change[change["CLOSE_YEAR"] == "2022"]
+
+    bar = px.bar(change, x="COUNTRY", y="YoY Change", height=500)
+    st.plotly_chart(bar, use_container_width=True)
 
 
 with tabs[2]:
@@ -235,12 +419,7 @@ with tabs[3]:
     # Picker of business ID and name on quotelines table
     business_id = st.selectbox(
         "Select a business",
-        QUOTELINES.groupby(["BUSINESS_ID", "NAME"])
-        .agg({"NET_TOTAL_USD": "sum"})
-        .reset_index()
-        .sort_values("NET_TOTAL_USD", ascending=False)
-        .drop_duplicates()
-        .values.tolist(),
+        BUSINESSES.sort_values("NET_TOTAL_USD", ascending=False).drop_duplicates().values.tolist(),
         format_func=lambda x: x[1],
     )
 
