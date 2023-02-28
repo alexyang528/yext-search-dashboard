@@ -1,6 +1,6 @@
 import pandas as pd
 import streamlit as st
-import snowflake.connector
+# import snowflake.connector
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -20,20 +20,20 @@ st.write("""---""")
 
 # Initialize connection.
 # Uses st.cache_resource to only run once.
-@st.cache_resource
-def init_connection():
-    return snowflake.connector.connect(**st.secrets["snowflake"], client_session_keep_alive=True)
+# @st.cache_resource
+# def init_connection():
+#     return snowflake.connector.connect(**st.secrets["snowflake"], client_session_keep_alive=True)
 
 
-CONN = init_connection()
+# CONN = init_connection()
 
 # Perform query.
 # Uses st.cache_data to only rerun when the query changes or after 10 min.
-@st.cache_data(ttl=600)
-def run_query(query):
-    with CONN.cursor() as cur:
-        cur.execute(query)
-        return cur.fetchall()
+# @st.cache_data(ttl=600)
+# def run_query(query):
+#     with CONN.cursor() as cur:
+#         cur.execute(query)
+#         return cur.fetchall()
 
 
 def read_data(file):
