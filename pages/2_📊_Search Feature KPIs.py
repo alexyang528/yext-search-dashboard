@@ -1,6 +1,7 @@
 from re import M
 import pandas as pd
 import streamlit as st
+import numpy as np
 
 # import snowflake.connector
 import plotly.express as px
@@ -91,6 +92,20 @@ SEARCH_FIELDS["CALENDAR_DATE"] = pd.to_datetime(SEARCH_FIELDS["CALENDAR_DATE"])
 
 ######################################################################
 
+
+##SEARCH APIS
+SEARCH_APIS = read_data("data/search_apis.csv")
+FILTER_SEARCH_BUSINESSES = read_data("data/api_by_businesses.csv")
+
+FILTER_SEARCH_BUSINESSES["MONTH"] = pd.to_datetime(FILTER_SEARCH_BUSINESSES["MONTH"]).dt.strftime(
+    "%Y-%m"
+)
+SEARCH_APIS["MONTH"] = pd.to_datetime(SEARCH_APIS["MONTH"]).dt.strftime("%Y-%m")
+# Convert dates to datetime
+
+######################################################################
+
+
 tabs = st.tabs(["Search Platform Screens", "Search Configuration Features", "Search APIs"])
 
 with tabs[0]:
@@ -163,4 +178,28 @@ with tabs[1]:
     )
 
 with tabs[2]:
+
+    st.info(
+        f"""
+        ## Summary
+        ####
+        """
+    )
+
     st.write("## Search APIs")
+
+    st.line_chart(
+        SEARCH_APIS,
+        x="MONTH",
+        y=["SEARCHES", "UNIVERSAL_SEARCHES", "VERTICAL_SEARCHES"],
+        height=500,
+    )
+    st.write("## Filter Search Usage")
+    st.bar_chart(SEARCH_APIS, x="MONTH", y="FILTER_SEARCH", height=500)
+
+    ######filter search by business#####
+    # st.bar_chart(FILTER_SEARCH_BUSINESSES, x="MONTH", y="SEARCHES", height=500)
+    # st.line_chart(FILTER_SEARCH_BUSINESSES, x="MONTH", y="SEARCHES", height=500)
+
+    # chart_data = pd.DataFrame(np.random.randn(20, 3), columns=["a", "b", "c"])
+    # print(chart_data)
